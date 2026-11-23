@@ -1,15 +1,20 @@
---[[
-    BLADE BALL ULTIMATE HUB — DEBUG BUILD
-]]
+print("[BBH] boot")
 
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Workspace = game:GetService("Workspace")
-local VirtualUser = game:GetService("VirtualUser")
-local VirtualInputManager = game:GetService("VirtualInputManager")
+local function safeService(name)
+    local ok, svc = pcall(function() return game:GetService(name) end)
+    if ok and svc then return svc end
+    print("[BBH] service indisponivel:", name)
+    return nil
+end
+
+local Players = safeService("Players")
+local RunService = safeService("RunService")
+local UserInputService = safeService("UserInputService")
+local TweenService = safeService("TweenService")
+local ReplicatedStorage = safeService("ReplicatedStorage")
+local Workspace = safeService("Workspace")
+local VirtualInputManager = safeService("VirtualInputManager")
+print("[BBH] services ok")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
@@ -88,8 +93,7 @@ end
 local function DiscoverParryRemote()
     local remotes = ReplicatedStorage:FindFirstChild("Remotes") or ReplicatedStorage:FindFirstChild("RemoteEvents")
     if not remotes then return false end
-    local candidates = {"ParryButtonPress","ParryAttempt","Parry","AttemptParry","Block"}
-    for _, name in ipairs(candidates) do
+    for _, name in ipairs({"ParryButtonPress","ParryAttempt","Parry","AttemptParry","Block"}) do
         local r = remotes:FindFirstChild(name)
         if r and (r:IsA("RemoteEvent") or r:IsA("RemoteFunction")) then ParryRemote = r; return true end
     end
@@ -136,10 +140,12 @@ local function FireParry()
         end)
         LastParry = now; return
     end
-    pcall(function()
-        VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
-        VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
-    end)
+    if VirtualInputManager then
+        pcall(function()
+            VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+            VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+        end)
+    end
     LastParry = now
 end
 
@@ -148,8 +154,8 @@ local function SmartParryTick()
     if not BallsFolder then return end
     local ball = GetTargetBall(); if not ball then return end
     local root = GetRoot(); if not root then return end
-    local ballPos = ball.Position; local ballVel = ball.AssemblyLinearVelocity
-    local charPos = root.Position; local charVel = root.AssemblyLinearVelocity
+    local ballPos, ballVel = ball.Position, ball.AssemblyLinearVelocity
+    local charPos, charVel = root.Position, root.AssemblyLinearVelocity
     local distance = (ballPos - charPos).Magnitude
     if distance > Config.ParryDistance * 2 then return end
     local dirToPlayer = (charPos - ballPos).Unit
@@ -188,7 +194,7 @@ local function DrawTrajectory()
     end
     if not Config.Trajectory or not Drawing then return end
     local ball = GetTargetBall(); if not ball then return end
-    local pos = ball.Position; local vel = ball.AssemblyLinearVelocity
+    local pos, vel = ball.Position, ball.AssemblyLinearVelocity
     local points = {}
     for t = 0, 1.5, 0.05 do table.insert(points, pos + vel * t) end
     for i = 1, #points - 1 do
@@ -227,12 +233,11 @@ local function AbilityTick() end
 local BuildTab
 
 local function CreateUI()
-    print("[BBH-DEBUG] CreateUI: inicio")
+    print("[BBH] CreateUI inicio")
     local gui = Instance.new("ScreenGui")
     gui.Name = "BBH_Ultimate"; gui.ResetOnSpawn = false; gui.IgnoreGuiInset = true
     gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
     UIRoot = gui
-    print("[BBH-DEBUG] CreateUI: ScreenGui parented")
 
     local main = Instance.new("Frame")
     main.Name = "Main"; main.Size = UDim2.new(0, 440, 0, 340); main.Position = UDim2.new(0.5, -220, 0.5, -170)
@@ -249,7 +254,6 @@ local function CreateUI()
     title.Size = UDim2.new(1, -100, 1, 0); title.Position = UDim2.new(0, 12, 0, 0)
     title.BackgroundTransparency = 1; title.Text = "BLADE BALL ULTIMATE HUB"; title.TextColor3 = Config.ThemeColor
     title.TextSize = 15; title.Font = Enum.Font.GothamBold; title.TextXAlignment = Enum.TextXAlignment.Left
-    print("[BBH-DEBUG] CreateUI: header ok")
 
     local minimizeBtn = Instance.new("TextButton", header)
     minimizeBtn.Size = UDim2.new(0, 28, 0, 28); minimizeBtn.Position = UDim2.new(1, -68, 0, 5)
@@ -289,16 +293,14 @@ local function CreateUI()
             BuildTab(tabName)
         end)
     end
-    print("[BBH-DEBUG] CreateUI: sidebar ok")
 
     local content = Instance.new("Frame", main)
     content.Name = "Content"; content.Size = UDim2.new(1, -120, 1, -52); content.Position = UDim2.new(0, 112, 0, 44)
     content.BackgroundTransparency = 1
     ContentFrame = content
 
-    print("[BBH-DEBUG] CreateUI: chamando BuildTab")
+    print("[BBH] CreateUI chamando BuildTab")
     BuildTab("Combat")
-    print("[BBH-DEBUG] CreateUI: BuildTab retornou")
 
     header.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -325,12 +327,11 @@ local function CreateUI()
         for _, d in pairs(Drawings) do if typeof(d) ~= "Instance" then pcall(function() d:Remove() end) end end
         Drawings = {}
     end)
-    print("[BBH-DEBUG] CreateUI: fim")
+    print("[BBH] CreateUI fim")
 end
 
 BuildTab = function(tabName)
-    print("[BBH-DEBUG] BuildTab: inicio", tabName)
-    if not ContentFrame then print("[BBH-DEBUG] BuildTab: ContentFrame nil!"); return end
+    if not ContentFrame then return end
     for _, child in ipairs(ContentFrame:GetChildren()) do child:Destroy() end
     local y = 0
 
@@ -390,4 +391,7 @@ BuildTab = function(tabName)
                     if inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch then updateFromX(inp.Position.X) end
                 end)
                 local endConn = UserInputService.InputEnded:Connect(function(inp)
-                    if inp.UserInputType == Enu
+                    if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
+                        moveConn:Disconnect(); endConn:Disconnect()
+                    end
+                e
