@@ -1,472 +1,408 @@
 --[[
-    BLOX FRUITS ULTIMATE MEGA HUB
-    Architecture: Data-Driven UI Framework
-    Modules: Core, Interface, Data, Themes
+    Death Ball Ultimate
+    Target : Roblox / Death Ball
+    Runtime: Luau (executor — PC & Android)
+    Deps   : Drawing (opcional, ESP), writefile/readfile (opcional, persistência)
+    Nota   : tudo abaixo usa APIs reais. Onde o jogo não expõe dado (ex.: sensibilidade
+             de mouse real, remote de parry), há fallback explícito ou limitação marcada.
 ]]
 
--- ============================================================
--- [CORE] SERVICES & CONFIG
--- ============================================================
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
-local CoreGui = game:GetService("CoreGui")
+--==================== GUARD / CLEANUP ====================
+local genv = (getgenv and getgenv()) or _G
+if genv.DBU_CLEANUP then pcall(genv.DBU_CLEANUP) end
 
-local LocalPlayer = Players.LocalPlayer
-local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local Players            = game:GetService("Players")
+local RunService         = game:GetService("RunService")
+local UserInputService   = game:GetService("UserInputService")
+local TweenService       = game:GetService("TweenService")
+local HttpService        = game:GetService("HttpService")
+local Lighting           = game:GetService("Lighting")
+local LocalPlayer        = Players.LocalPlayer
 
-local Hub = {
-    Version = "1.0.0",
-    Themes = {
-        MidnightPurple = { Main = Color3.fromRGB(15, 10, 20), Accent = Color3.fromRGB(160, 60, 255), Text = Color3.fromRGB(240, 240, 240), SubText = Color3.fromRGB(150, 150, 150) },
-        OceanBlue      = { Main = Color3.fromRGB(10, 20, 30), Accent = Color3.fromRGB(0, 150, 255), Text = Color3.fromRGB(240, 240, 240), SubText = Color3.fromRGB(150, 180, 200) },
-        CrimsonDark    = { Main = Color3.fromRGB(20, 10, 10), Accent = Color3.fromRGB(220, 40, 60), Text = Color3.fromRGB(240, 240, 240), SubText = Color3.fromRGB(200, 150, 150) },
-        Emerald        = { Main = Color3.fromRGB(10, 20, 15), Accent = Color3.fromRGB(40, 220, 120), Text = Color3.fromRGB(240, 240, 240), SubText = Color3.fromRGB(150, 200, 170) },
-        PureBlack      = { Main = Color3.fromRGB(0, 0, 0), Accent = Color3.fromRGB(200, 200, 200), Text = Color3.fromRGB(255, 255, 255), SubText = Color3.fromRGB(150, 150, 150) },
-        Aurora         = { Main = Color3.fromRGB(15, 15, 25), Accent = Color3.fromRGB(100, 255, 200), Text = Color3.fromRGB(240, 240, 240), SubText = Color3.fromRGB(150, 200, 200) },
-        Cyberpunk      = { Main = Color3.fromRGB(10, 0, 15), Accent = Color3.fromRGB(255, 0, 150), Text = Color3.fromRGB(0, 255, 255), SubText = Color3.fromRGB(200, 100, 200) },
-        MinimalDark    = { Main = Color3.fromRGB(25, 25, 25), Accent = Color3.fromRGB(255, 255, 255), Text = Color3.fromRGB(220, 220, 220), SubText = Color3.fromRGB(140, 140, 140) },
+local CONFIG_FILE = "DBU_config.json"
+local hasDraw     = (typeof(Drawing) == "table")
+local hasFS       = (typeof(writefile) == "function" and typeof(readfile) == "function")
+
+--==================== CONFIG ====================
+local defaults = {
+    ui = {
+        scale = 1.0, transparency = 0.05, theme = "Crimson",
+        animSpeed = 0.22, notifications = true, minimizar = false,
     },
-    CurrentTheme = "MidnightPurple",
-    IsMinimized = false,
-    ActivePage = "Dashboard",
-    Elements = {}, -- Cache for theme updating
+    esp = {
+        enabled = false, players = false, ball = false, distance = false,
+        names = false, health = false, team = false, target = false,
+        colorPlayer = {220, 45, 70}, colorBall = {150, 70, 230},
+        transparency = 0.35, box = true, tracer = true,
+    },
+    ball = {
+        direction = false, trajectory = false, distance = false,
+        speed = false, approach = false, history = false,
+        ballName = "Ball",
+    },
+    combat = {
+        ballDirInd = false, targetDirInd = false, reaction = false,
+        parryTrainer = false, defenseStats = false, perf = false,
+    },
+    movement = { fov = 70, keybindToggle = Enum.KeyCode.RightShift },
+    stats = { history = {} },
+    keybinds = {},
 }
 
-local Theme = Hub.Themes[Hub.CurrentTheme]
-
--- ============================================================
--- [DATA] DATABASES (Expandível para milhares de linhas)
--- ============================================================
-local Data = {
-    Islands = {
-        FirstSea = {
-            { Name = "Starter Island", Level = 1, Boss = "None" },
-            { Name = "Jungle", Level = 15, Boss = "Gorilla King" },
-            { Name = "Pirate Village", Level = 30, Boss = "Bobby" },
-            { Name = "Desert", Level = 60, Boss = "Desert Bandit" },
-            { Name = "Frozen Village", Level = 90, Boss = "Frost Bandit" },
-            { Name = "Marine Fortress", Level = 120, Boss = "Greybeard" },
-            { Name = "Skylands", Level = 150, Boss = "Wysper" },
-            { Name = "Prison", Level = 190, Boss = "Swan" },
-            { Name = "Colosseum", Level = 230, Boss = "The Prince" },
-            { Name = "Magma Village", Level = 270, Boss = "Magma Admiral" },
-            { Name = "Underwater City", Level = 300, Boss = "Fishman Lord" },
-            { Name = "Fountain City", Level = 350, Boss = "Cyborg" },
-        },
-        SecondSea = {
-            { Name = "Kingdom of Rose", Level = 700, Boss = "Awakened Ice Admiral" },
-            { Name = "Green Zone", Level = 750, Boss = "Zombie" },
-            { Name = "Graveyard", Level = 800, Boss = "Cursed Skeleton" },
-            { Name = "Snow Mountain", Level = 850, Boss = "Snow Lurker" },
-            { Name = "Hot and Cold", Level = 900, Boss = "Freezer" },
-            { Name = "Cursed Ship", Level = 1000, Boss = "Cursed Captain" },
-            { Name = "Ice Castle", Level = 1100, Boss = "Awakened Ice Admiral" },
-            { Name = "Forgotten Island", Level = 1200, Boss = "Cursed Captain" },
-            { Name = "Dark Arena", Level = 1300, Boss = "Darkbeard" },
-        },
-        ThirdSea = {
-            { Name = "Port Town", Level = 1500, Boss = "Stone" },
-            { Name = "Hydra Island", Level = 1600, Boss = "Jungle Pirate" },
-            { Name = "Great Tree", Level = 1700, Boss = "Great Ape" },
-            { Name = "Floating Turtle", Level = 1800, Boss = "Captain Elephant" },
-            { Name = "Haunted Castle", Level = 1900, Boss = "Soul Reaper" },
-            { Name = "Sea of Treats", Level = 2000, Boss = "Cake Queen" },
-            { Name = "Tiki Outpost", Level = 2200, Boss = "Tiki Boss" },
-        }
-    },
-    Fruits = {
-        { Name = "Dragon", Type = "Beast", Rarity = "Mythical", Price = "3,500,000", Awakening = true },
-        { Name = "Leopard", Type = "Beast", Rarity = "Mythical", Price = "5,000,000", Awakening = false },
-        { Name = "Kitsune", Type = "Beast", Rarity = "Mythical", Price = "8,000,000", Awakening = false },
-        { Name = "Dough", Type = "Elemental", Rarity = "Mythical", Price = "2,800,000", Awakening = true },
-        { Name = "Venom", Type = "Beast", Rarity = "Mythical", Price = "3,000,000", Awakening = false },
-        { Name = "Shadow", Type = "Natural", Rarity = "Mythical", Price = "2,900,000", Awakening = false },
-        { Name = "Control", Type = "Natural", Rarity = "Mythical", Price = "3,200,000", Awakening = false },
-        { Name = "Spirit", Type = "Natural", Rarity = "Mythical", Price = "3,800,000", Awakening = false },
-        { Name = "Mammoth", Type = "Beast", Rarity = "Mythical", Price = "2,700,000", Awakening = false },
-        { Name = "T-Rex", Type = "Beast", Rarity = "Mythical", Price = "2,700,000", Awakening = false },
-        { Name = "Gravity", Type = "Natural", Rarity = "Mythical", Price = "2,500,000", Awakening = false },
-    },
-    Swords = {
-        { Name = "Cutlass", Rarity = "Common", Price = "1,000", Requirement = "None" },
-        { Name = "Katana", Rarity = "Uncommon", Price = "1,000", Requirement = "None" },
-        { Name = "Iron Mace", Rarity = "Uncommon", Price = "25,000", Requirement = "Level 20" },
-        { Name = "Dual Katana", Rarity = "Rare", Price = "12,000", Requirement = "Level 30" },
-        { Name = "Trident", Rarity = "Rare", Price = "50,000", Requirement = "Level 60" },
-        { Name = "Saber", Rarity = "Legendary", Price = "N/A", Requirement = "Puzzle" },
-        { Name = "Rengoku", Rarity = "Legendary", Price = "N/A", Requirement = "Puzzle" },
-        { Name = "Dark Blade", Rarity = "Mythical", Price = "5,000,000", Requirement = "Level 500" },
-        { Name = "True Triple Katana", Rarity = "Mythical", Price = "2,000,000", Requirement = "Level 1000" },
-        { Name = "Cursed Dual Katana", Rarity = "Mythical", Price = "N/A", Requirement = "Puzzle" },
-    }
-}
-
--- ============================================================
--- [INTERFACE] UI CREATION UTILITIES
--- ============================================================
-local UIRoot = Instance.new("ScreenGui")
-UIRoot.Name = "BF_UltimateHub"
-UIRoot.ResetOnSpawn = false
-UIRoot.IgnoreGuiInset = true
-UIRoot.Parent = PlayerGui
-
-local function Create(className, properties, children)
-    local inst = Instance.new(className)
-    for k, v in pairs(properties) do
-        if k ~= "Parent" then inst[k] = v end
-    end
-    if children then
-        for _, child in ipairs(children) do child.Parent = inst end
-    end
-    if properties.Parent then inst.Parent = properties.Parent end
-    return inst
-end
-
--- Main Window
-local MainFrame = Create("Frame", {
-    Name = "Main",
-    Parent = UIRoot,
-    Size = UDim2.new(0, 700, 0, 450),
-    Position = UDim2.new(0.5, -350, 0.5, -225),
-    BackgroundColor3 = Theme.Main,
-    BorderSizePixel = 0,
-    ClipsDescendants = true,
-})
-
-Create("UICorner", { Parent = MainFrame, CornerRadius = UDim.new(0, 10) })
-local Stroke = Create("UIStroke", { Parent = MainFrame, Color = Theme.Accent, Thickness = 1, Transparency = 0.5 })
-
--- Topbar
-local Topbar = Create("Frame", {
-    Name = "Topbar",
-    Parent = MainFrame,
-    Size = UDim2.new(1, 0, 0, 40),
-    BackgroundColor3 = Theme.Main:Lerp(Color3.new(1,1,1), 0.05),
-    BorderSizePixel = 0,
-})
-
-Create("TextLabel", {
-    Parent = Topbar,
-    Size = UDim2.new(1, -100, 1, 0),
-    Position = UDim2.new(0, 15, 0, 0),
-    BackgroundTransparency = 1,
-    Text = "BLOX FRUITS ULTIMATE MEGA HUB",
-    TextColor3 = Theme.Accent,
-    TextSize = 14,
-    Font = Enum.Font.GothamBold,
-    TextXAlignment = Enum.TextXAlignment.Left
-})
-
--- Minimize / Close
-local CloseBtn = Create("TextButton", {
-    Parent = Topbar,
-    Size = UDim2.new(0, 30, 0, 30),
-    Position = UDim2.new(1, -40, 0, 5),
-    BackgroundColor3 = Color3.fromRGB(200, 50, 50),
-    Text = "X",
-    TextColor3 = Color3.new(1,1,1),
-    Font = Enum.Font.GothamBold,
-    TextSize = 12,
-    BorderSizePixel = 0
-})
-Create("UICorner", { Parent = CloseBtn, CornerRadius = UDim.new(0, 6) })
-
-local MinBtn = Create("TextButton", {
-    Parent = Topbar,
-    Size = UDim2.new(0, 30, 0, 30),
-    Position = UDim2.new(1, -75, 0, 5),
-    BackgroundColor3 = Color3.fromRGB(200, 150, 50),
-    Text = "—",
-    TextColor3 = Color3.new(1,1,1),
-    Font = Enum.Font.GothamBold,
-    TextSize = 12,
-    BorderSizePixel = 0
-})
-Create("UICorner", { Parent = MinBtn, CornerRadius = UDim.new(0, 6) })
-
--- Search Bar
-local SearchBar = Create("Frame", {
-    Parent = Topbar,
-    Size = UDim2.new(0, 200, 0, 26),
-    Position = UDim2.new(1, -290, 0, 7),
-    BackgroundColor3 = Theme.Main,
-    BorderSizePixel = 0
-})
-Create("UICorner", { Parent = SearchBar, CornerRadius = UDim.new(0, 6) })
-local SearchBox = Create("TextBox", {
-    Parent = SearchBar,
-    Size = UDim2.new(1, -20, 1, 0),
-    Position = UDim2.new(0, 10, 0, 0),
-    BackgroundTransparency = 1,
-    Text = "",
-    PlaceholderText = "Search module...",
-    PlaceholderColor3 = Theme.SubText,
-    TextColor3 = Theme.Text,
-    TextSize = 12,
-    Font = Enum.Font.Gotham,
-    TextXAlignment = Enum.TextXAlignment.Left
-})
-
--- Sidebar
-local Sidebar = Create("ScrollingFrame", {
-    Parent = MainFrame,
-    Size = UDim2.new(0, 180, 1, -40),
-    Position = UDim2.new(0, 0, 0, 40),
-    BackgroundColor3 = Theme.Main,
-    BorderSizePixel = 0,
-    CanvasSize = UDim2.new(0, 0, 0, 0),
-    ScrollBarThickness = 2,
-    ScrollBarImageColor3 = Theme.Accent,
-})
-local SidebarLayout = Create("UIListLayout", { Parent = Sidebar, Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder })
-Create("UIPadding", { Parent = Sidebar, PaddingTop = UDim.new(0, 10), PaddingLeft = UDim.new(0, 10) })
-
--- Content Area
-local ContentArea = Create("ScrollingFrame", {
-    Parent = MainFrame,
-    Size = UDim2.new(1, -190, 1, -50),
-    Position = UDim2.new(0, 185, 0, 45),
-    BackgroundTransparency = 1,
-    BorderSizePixel = 0,
-    CanvasSize = UDim2.new(0, 0, 0, 0),
-    ScrollBarThickness = 2,
-    ScrollBarImageColor3 = Theme.Accent,
-})
-local ContentLayout = Create("UIListLayout", { Parent = ContentArea, Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder })
-
--- ============================================================
--- [CORE] UI LOGIC & ANIMATIONS
--- ============================================================
--- Dragging
-local dragging, dragInput, dragStart, startPos
-Topbar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = MainFrame.Position
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then dragging = false end
-        end)
-    end
-end)
-UserInputService.InputChanged:Connect(function(input)
-    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-        local delta = input.Position - dragStart
-        MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-    end
-end)
-
--- Minimize
-MinBtn.MouseButton1Click:Connect(function()
-    Hub.IsMinimized = not Hub.IsMinimized
-    local targetSize = Hub.IsMinimized and UDim2.new(0, 700, 0, 40) or UDim2.new(0, 700, 0, 450)
-    TweenService:Create(MainFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Size = targetSize}):Play()
-    Sidebar.Visible = not Hub.IsMinimized
-    ContentArea.Visible = not Hub.IsMinimized
-end)
-
--- Close
-CloseBtn.MouseButton1Click:Connect(function()
-    UIRoot:Destroy()
-end)
-
--- ============================================================
--- [INTERFACE] PAGE BUILDER COMPONENTS
--- ============================================================
-local function ClearContent()
-    for _, child in ipairs(ContentArea:GetChildren()) do
-        if child:IsA("Frame") or child:IsA("TextLabel") then
-            child:Destroy()
+local cfg = defaults
+if hasFS then
+    local ok, raw = pcall(readfile, CONFIG_FILE)
+    if ok and raw and #raw > 0 then
+        local ok2, data = pcall(HttpService.JSONDecode, HttpService, raw)
+        if ok2 and type(data) == "table" then
+            -- merge rasa (2 níveis) suficiente
+            for k, v in pairs(data) do
+                if type(v) == "table" and type(cfg[k]) == "table" then
+                    for k2, v2 in pairs(v) do cfg[k][k2] = v2 end
+                else cfg[k] = v end
+            end
         end
     end
 end
 
--- Card Component
-local function CreateCard(titleText, size)
-    local Card = Create("Frame", {
-        Parent = ContentArea,
-        Size = size or UDim2.new(1, -10, 0, 80),
-        BackgroundColor3 = Theme.Main:Lerp(Color3.new(1,1,1), 0.05),
-        BorderSizePixel = 0,
-    })
-    Create("UICorner", { Parent = Card, CornerRadius = UDim.new(0, 8) })
-    Create("UIStroke", { Parent = Card, Color = Theme.Accent, Transparency = 0.7 })
-    
-    Create("TextLabel", {
-        Parent = Card,
-        Size = UDim2.new(1, -20, 0, 25),
-        Position = UDim2.new(0, 10, 0, 5),
-        BackgroundTransparency = 1,
-        Text = titleText,
-        TextColor3 = Theme.Accent,
-        TextSize = 14,
-        Font = Enum.Font.GothamBold,
-        TextXAlignment = Enum.TextXAlignment.Left
-    })
-    
-    return Card
+local function saveConfig()
+    if not hasFS then return end
+    pcall(writefile, CONFIG_FILE, HttpService:JSONEncode(cfg))
 end
 
--- Info Row Component
-local function CreateInfoRow(parent, label, value)
-    local Row = Create("Frame", {
-        Parent = parent,
-        Size = UDim2.new(1, -20, 0, 20),
-        BackgroundTransparency = 1,
-    })
-    Create("TextLabel", {
-        Parent = Row,
-        Size = UDim2.new(0.5, 0, 1, 0),
-        Position = UDim2.new(0, 5, 0, 0),
-        BackgroundTransparency = 1,
-        Text = label,
-        TextColor3 = Theme.SubText,
-        TextSize = 12,
-        Font = Enum.Font.Gotham,
-        TextXAlignment = Enum.TextXAlignment.Left
-    })
-    Create("TextLabel", {
-        Parent = Row,
-        Size = UDim2.new(0.5, -10, 1, 0),
-        Position = UDim2.new(0.5, 5, 0, 0),
-        BackgroundTransparency = 1,
-        Text = tostring(value),
-        TextColor3 = Theme.Text,
-        TextSize = 12,
-        Font = Enum.Font.GothamBold,
-        TextXAlignment = Enum.TextXAlignment.Right
-    })
+--==================== THEMES ====================
+local Themes = {
+    Crimson = { bg={18,16,22}, panel={26,22,32}, accent={210,40,70}, accent2={140,60,220},
+                text={235,230,240}, sub={150,145,165}, stroke={60,50,70} },
+    Violet  = { bg={16,14,24}, panel={24,20,36}, accent={140,60,220}, accent2={210,40,120},
+                text={230,225,240}, sub={140,135,165}, stroke={55,45,80} },
+    Midnight= { bg={12,14,20}, panel={20,24,34}, accent={60,140,230}, accent2={140,90,240},
+                text={225,230,240}, sub={135,145,165}, stroke={45,55,75} },
+}
+local T = Themes[cfg.ui.theme] or Themes.Crimson
+local function C(t) return Color3.fromRGB(t[1], t[2], t[3]) end
+
+--==================== UTIL ====================
+local function lerp(a, b, t) return a + (b - a) * t end
+local function round(n) return math.floor(n + 0.5) end
+
+local camera = workspace.CurrentCamera
+workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+    camera = workspace.CurrentCamera
+end)
+
+local function worldToScreen(pos)
+    local cam = workspace.CurrentCamera
+    if not cam then return nil, false end
+    local sp, on = cam:WorldToViewportPoint(pos)
+    if not on or sp.Z <= 0 then return nil, false end
+    return Vector2.new(sp.X, sp.Y), true
 end
 
--- List Row Component (For Databases)
-local function CreateListRow(parent, columns)
-    local Row = Create("Frame", {
-        Parent = parent,
-        Size = UDim2.new(1, -20, 0, 30),
-        BackgroundTransparency = 0.5,
-        BackgroundColor3 = Theme.Main,
-    })
-    Create("UICorner", { Parent = Row, CornerRadius = UDim.new(0, 4) })
-    
-    local spacing = 1 / #columns
-    for i, colData in ipairs(columns) do
-        Create("TextLabel", {
-            Parent = Row,
-            Size = UDim2.new(spacing, -10, 1, 0),
-            Position = UDim2.new((i-1) * spacing, 5, 0, 0),
-            BackgroundTransparency = 1,
-            Text = tostring(colData),
-            TextColor3 = i == 1 and Theme.Accent or Theme.Text,
-            TextSize = 12,
-            Font = i == 1 and Enum.Font.GothamBold or Enum.Font.Gotham,
-            TextXAlignment = Enum.TextXAlignment.Left
-        })
+--==================== NOTIFY ====================
+local notifyGui, notifyHolder
+local function buildNotify(uiParent)
+    notifyGui = Instance.new("ScreenGui")
+    notifyGui.Name = "DBU_Notify"
+    notifyGui.ResetOnSpawn = false
+    notifyGui.IgnoreGuiInset = true
+    notifyGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    notifyGui.Parent = uiParent
+
+    notifyHolder = Instance.new("Frame")
+    notifyHolder.Size = UDim2.new(0, 280, 1, -40)
+    notifyHolder.Position = UDim2.new(1, -300, 0, 20)
+    notifyHolder.BackgroundTransparency = 1
+    notifyHolder.Parent = notifyGui
+    local lay = Instance.new("UIListLayout")
+    lay.Padding = UDim.new(0, 8)
+    lay.SortOrder = Enum.SortOrder.LayoutOrder
+    lay.Parent = notifyHolder
+end
+
+local function notify(title, msg, duration)
+    if not (cfg.ui.notifications and notifyHolder) then return end
+    duration = duration or 3
+    local card = Instance.new("Frame")
+    card.Size = UDim2.new(1, 0, 0, 52)
+    card.BackgroundColor3 = C(T.panel)
+    card.BackgroundTransparency = 0.05
+    card.BorderSizePixel = 0
+    card.Parent = notifyHolder
+    local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0, 8); corner.Parent = card
+    local stroke = Instance.new("UIStroke"); stroke.Color = C(T.accent); stroke.Transparency = 0.4; stroke.Parent = card
+    local bar = Instance.new("Frame")
+    bar.Size = UDim2.new(0, 3, 1, 0); bar.BackgroundColor3 = C(T.accent); bar.BorderSizePixel = 0; bar.Parent = card
+    local tl = Instance.new("TextLabel")
+    tl.BackgroundTransparency = 1; tl.Size = UDim2.new(1, -14, 0, 20)
+    tl.Position = UDim2.new(0, 10, 0, 6); tl.Font = Enum.Font.GothamBold; tl.TextSize = 13
+    tl.TextXAlignment = Enum.TextXAlignment.Left; tl.TextColor3 = C(T.text); tl.Text = title; tl.Parent = card
+    local ml = Instance.new("TextLabel")
+    ml.BackgroundTransparency = 1; ml.Size = UDim2.new(1, -14, 0, 18)
+    ml.Position = UDim2.new(0, 10, 0, 26); ml.Font = Enum.Font.Gotham; ml.TextSize = 11
+    ml.TextXAlignment = Enum.TextXAlignment.Left; ml.TextColor3 = C(T.sub); ml.Text = msg; ml.Parent = card
+
+    card.BackgroundTransparency = 1; bar.BackgroundTransparency = 1; tl.TextTransparency = 1; ml.TextTransparency = 1
+    TweenService:Create(card, TweenInfo.new(cfg.ui.animSpeed), {BackgroundTransparency = 0.05}):Play()
+    TweenService:Create(bar, TweenInfo.new(cfg.ui.animSpeed), {BackgroundTransparency = 0}):Play()
+    TweenService:Create(tl, TweenInfo.new(cfg.ui.animSpeed), {TextTransparency = 0}):Play()
+    TweenService:Create(ml, TweenInfo.new(cfg.ui.animSpeed), {TextTransparency = 0}):Play()
+
+    task.delay(duration, function()
+        local out = TweenInfo.new(cfg.ui.animSpeed)
+        TweenService:Create(card, out, {BackgroundTransparency = 1}):Play()
+        TweenService:Create(bar, out, {BackgroundTransparency = 1}):Play()
+        TweenService:Create(tl, out, {TextTransparency = 1}):Play()
+        TweenService:Create(ml, out, {TextTransparency = 1}):Play()
+        task.wait(cfg.ui.animSpeed)
+        card:Destroy()
+    end)
+end
+
+--==================== FEATURE REGISTRY ====================
+-- Cada item: {category, name, kind, default, min, max, callback}
+local registry = {}
+local uiItems = {} -- {frame, category, search}
+local function reg(item) table.insert(registry, item) return item end
+
+--==================== UI BUILD ====================
+local function uiParent()
+    if gethui then local ok, h = pcall(gethui); if ok and h then return h end end
+    local ok, cg = pcall(function() return game:GetService("CoreGui") end)
+    if ok and cg then return cg end
+    return LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "DeathBallUltimate"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = uiParent()
+
+buildNotify(gui)
+
+local main = Instance.new("Frame")
+main.Name = "Main"
+main.Size = UDim2.new(0, 560, 0, 400)
+main.Position = UDim2.new(0.5, -280, 0.5, -200)
+main.BackgroundColor3 = C(T.bg)
+main.BorderSizePixel = 0
+main.ClipsDescendants = true
+main.Active = true
+main.Parent = gui
+local mCorner = Instance.new("UICorner"); mCorner.CornerRadius = UDim.new(0, 10); mCorner.Parent = main
+local mStroke = Instance.new("UIStroke"); mStroke.Color = C(T.stroke); mStroke.Transparency = 0.5; mStroke.Parent = main
+
+-- topbar
+local top = Instance.new("Frame")
+top.Size = UDim2.new(1, 0, 0, 40); top.BackgroundColor3 = C(T.panel); top.BorderSizePixel = 0; top.Parent = main
+local grad = Instance.new("UIGradient")
+grad.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, C(T.accent)), ColorSequenceKeypoint.new(1, C(T.accent2)) })
+grad.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.7), NumberSequenceKeypoint.new(1, 0.95) })
+grad.Rotation = 0; grad.Parent = top
+
+local title = Instance.new("TextLabel")
+title.BackgroundTransparency = 1; title.Size = UDim2.new(0, 240, 1, 0); title.Position = UDim2.new(0, 12, 0, 0)
+title.Font = Enum.Font.GothamBold; title.TextSize = 15; title.TextXAlignment = Enum.TextXAlignment.Left
+title.TextColor3 = C(T.text); title.Text = "DEATH BALL  ULTIMATE"; title.Parent = top
+
+-- search
+local searchBox = Instance.new("TextBox")
+searchBox.Size = UDim2.new(0, 170, 0, 24); searchBox.Position = UDim2.new(0, 258, 0, 8)
+searchBox.BackgroundColor3 = C(T.bg); searchBox.BackgroundTransparency = 0.2
+searchBox.BorderSizePixel = 0; searchBox.Font = Enum.Font.Gotham; searchBox.TextSize = 12
+searchBox.TextColor3 = C(T.text); searchBox.PlaceholderText = "pesquisar função..."
+searchBox.PlaceholderColor3 = C(T.sub); searchBox.Text = ""; searchBox.ClearTextOnFocus = false
+searchBox.Parent = top
+local sCorner = Instance.new("UICorner"); sCorner.CornerRadius = UDim.new(0, 6); sCorner.Parent = searchBox
+local sPad = Instance.new("UIPadding"); sPad.PaddingLeft = UDim.new(0, 8); sPad.Parent = searchBox
+
+-- min / close
+local function topBtn(sym, xoff, color)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(0, 26, 0, 26); b.Position = UDim2.new(1, xoff, 0.5, -13)
+    b.BackgroundColor3 = C(T.bg); b.BackgroundTransparency = 0.2; b.BorderSizePixel = 0
+    b.Font = Enum.Font.GothamBold; b.TextSize = 14; b.TextColor3 = color or C(T.text); b.Text = sym; b.Parent = top
+    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = b
+    return b
+end
+local minBtn = topBtn("–", -66)
+local closeBtn = topBtn("×", -36, C(T.accent))
+
+-- sidebar
+local side = Instance.new("Frame")
+side.Size = UDim2.new(0, 130, 1, -40); side.Position = UDim2.new(0, 0, 0, 40)
+side.BackgroundColor3 = C(T.panel); side.BackgroundTransparency = 0.35; side.BorderSizePixel = 0; side.Parent = main
+local sideStroke = Instance.new("UIStroke"); sideStroke.Color = C(T.stroke); sideStroke.Transparency = 0.6; sideStroke.Parent = side
+local sideLay = Instance.new("UIListLayout"); sideLay.Padding = UDim.new(0, 4); sideLay.Parent = side
+local sidePad = Instance.new("UIPadding"); sidePad.PaddingTop = UDim.new(0, 8); sidePad.PaddingLeft = UDim.new(0, 8); sidePad.PaddingRight = UDim.new(0, 8); sidePad.Parent = side
+
+-- content
+local content = Instance.new("ScrollingFrame")
+content.Size = UDim2.new(1, -140, 1, -48); content.Position = UDim2.new(0, 138, 0, 44)
+content.BackgroundTransparency = 1; content.BorderSizePixel = 0
+content.ScrollBarThickness = 3; content.ScrollBarImageColor3 = C(T.accent)
+content.CanvasSize = UDim2.new(0, 0, 0, 0); content.Parent = main
+local cLay = Instance.new("UIListLayout"); cLay.Padding = UDim.new(0, 6); cLay.Parent = content
+local cPad = Instance.new("UIPadding"); cPad.PaddingRight = UDim.new(0, 8); cPad.Parent = content
+cLay:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    content.CanvasSize = UDim2.new(0, 0, 0, cLay.AbsoluteContentSize.Y + 10)
+end)
+
+-- categories
+local categories = { "Combat", "Visuals", "Treino", "Bola", "Movimento", "Stats", "Settings" }
+local activeCat = "Combat"
+local catButtons = {}
+
+local function makeCat(name)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(1, 0, 0, 30); b.BackgroundColor3 = C(T.bg); b.BackgroundTransparency = 0.3
+    b.BorderSizePixel = 0; b.Font = Enum.Font.Gotham; b.TextSize = 12; b.TextColor3 = C(T.sub)
+    b.TextXAlignment = Enum.TextXAlignment.Left; b.Text = "  " .. name; b.Parent = side
+    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = b
+    b.MouseButton1Click:Connect(function()
+        activeCat = name
+        for n, bb in pairs(catButtons) do
+            bb.BackgroundColor3 = (n == name) and C(T.accent) or C(T.bg)
+            bb.TextColor3 = (n == name) and C(T.text) or C(T.sub)
+        end
+        applyFilter()
+    end)
+    catButtons[name] = b
+    return b
+end
+for _, n in ipairs(categories) do makeCat(n) end
+catButtons["Combat"].BackgroundColor3 = C(T.accent)
+catButtons["Combat"].TextColor3 = C(T.text)
+
+--==================== COMPONENTES ====================
+local function registerItem(frame, category, searchName)
+    table.insert(uiItems, { frame = frame, category = category, search = searchName:lower() })
+end
+
+local function sectionLabel(parent, text, cat)
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.new(1, 0, 0, 20); l.BackgroundTransparency = 1
+    l.Font = Enum.Font.GothamBold; l.TextSize = 11; l.TextColor3 = C(T.accent2)
+    l.TextXAlignment = Enum.TextXAlignment.Left; l.Text = text:upper(); l.Parent = parent
+    registerItem(l, cat, text)
+    return l
+end
+
+local function makeToggle(parent, cat, name, default, cb)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 28); row.BackgroundColor3 = C(T.panel); row.BackgroundTransparency = 0.55
+    row.BorderSizePixel = 0; row.Parent = parent
+    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 5); c.Parent = row
+    local l = Instance.new("TextLabel")
+    l.BackgroundTransparency = 1; l.Size = UDim2.new(1, -46, 1, 0); l.Position = UDim2.new(0, 10, 0, 0)
+    l.Font = Enum.Font.Gotham; l.TextSize = 12; l.TextXAlignment = Enum.TextXAlignment.Left
+    l.TextColor3 = C(T.text); l.Text = name; l.Parent = row
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 30, 0, 16); btn.Position = UDim2.new(1, -40, 0.5, -8)
+    btn.BackgroundColor3 = C(T.bg); btn.BorderSizePixel = 0; btn.Text = ""; btn.Parent = row
+    local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(1, 0); bc.Parent = btn
+    local knob = Instance.new("Frame")
+    knob.Size = UDim2.new(0, 12, 0, 12); knob.Position = UDim2.new(0, 2, 0.5, -6)
+    knob.BackgroundColor3 = C(T.sub); knob.BorderSizePixel = 0; knob.Parent = btn
+    local kc = Instance.new("UICorner"); kc.CornerRadius = UDim.new(1, 0); kc.Parent = knob
+    local state = default and true or false
+    local function apply()
+        TweenService:Create(btn, TweenInfo.new(cfg.ui.animSpeed), {BackgroundColor3 = state and C(T.accent) or C(T.bg)}):Play()
+        TweenService:Create(knob, TweenInfo.new(cfg.ui.animSpeed), {
+            Position = state and UDim2.new(1, -14, 0.5, -6) or UDim2.new(0, 2, 0.5, -6),
+            BackgroundColor3 = state and C(T.text) or C(T.sub),
+        }):Play()
+        local ok, err = pcall(cb, state)
+        if not ok then notify("Erro", tostring(err), 4) end
     end
+    btn.MouseButton1Click:Connect(function() state = not state; apply() end)
+    if state then task.defer(apply) end
+    registerItem(row, cat, name)
+    return row
 end
 
--- ============================================================
--- [MODULES] PAGE DEFINITIONS
--- ============================================================
-local Pages = {}
+local function makeSlider(parent, cat, name, min, max, default, cb)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 40); row.BackgroundColor3 = C(T.panel); row.BackgroundTransparency = 0.55
+    row.BorderSizePixel = 0; row.Parent = parent
+    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 5); c.Parent = row
+    local l = Instance.new("TextLabel")
+    l.BackgroundTransparency = 1; l.Size = UDim2.new(1, -60, 0, 18); l.Position = UDim2.new(0, 10, 0, 3)
+    l.Font = Enum.Font.Gotham; l.TextSize = 12; l.TextXAlignment = Enum.TextXAlignment.Left
+    l.TextColor3 = C(T.text); l.Text = name; l.Parent = row
+    local val = Instance.new("TextLabel")
+    val.BackgroundTransparency = 1; val.Size = UDim2.new(0, 50, 0, 18); val.Position = UDim2.new(1, -58, 0, 3)
+    val.Font = Enum.Font.GothamBold; val.TextSize = 12; val.TextColor3 = C(T.accent)
+    val.TextXAlignment = Enum.TextXAlignment.Right; val.Text = tostring(default); val.Parent = row
+    local track = Instance.new("Frame")
+    track.Size = UDim2.new(1, -20, 0, 6); track.Position = UDim2.new(0, 10, 0, 26)
+    track.BackgroundColor3 = C(T.bg); track.BorderSizePixel = 0; track.Parent = row
+    local tc = Instance.new("UICorner"); tc.CornerRadius = UDim.new(1, 0); tc.Parent = track
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.new(0, 0, 1, 0); fill.BackgroundColor3 = C(T.accent); fill.BorderSizePixel = 0; fill.Parent = track
+    local fc = Instance.new("UICorner"); fc.CornerRadius = UDim.new(1, 0); fc.Parent = fill
 
--- 1. Dashboard
-Pages.Dashboard = function()
-    ClearContent()
-    
-    -- Player Info Card
-    local InfoCard = CreateCard("PLAYER INFORMATION", UDim2.new(1, -10, 0, 140))
-    local data = LocalPlayer:FindFirstChild("Data")
-    local stats = LocalPlayer:FindFirstChild("leaderstats")
-    
-    -- Real stats reading (adapting to Blox Fruits standard)
-    local level = stats and stats:FindFirstChild("Level") and stats.Level.Value or (data and data:FindFirstChild("Level") and data.Level.Value) or "N/A"
-    local beli = stats and stats:FindFirstChild("Beli") and stats.Beli.Value or (data and data:FindFirstChild("Beli") and data.Beli.Value) or "N/A"
-    local frags = data and data:FindFirstChild("Fragments") and data.Fragments.Value or "N/A"
-    
-    CreateInfoRow(InfoCard, "Player Name:", LocalPlayer.Name)
-    CreateInfoRow(InfoCard, "Account Age:", LocalPlayer.AccountAge .. " days")
-    CreateInfoRow(InfoCard, "Current Level:", level)
-    CreateInfoRow(InfoCard, "Beli:", beli)
-    CreateInfoRow(InfoCard, "Fragments:", frags)
-    
-    -- Stats Card
-    local StatCard = CreateCard("COMBAT STATS", UDim2.new(1, -10, 0, 100))
-    CreateInfoRow(StatCard, "Melee / Sword / Gun", "Synced")
-    CreateInfoRow(StatCard, "Blox Fruit / Defense", "Synced")
-    CreateInfoRow(StatCard, "Status", "Ready")
+    local value = default
+    local function setValue(v, fire)
+        value = math.clamp(v, min, max)
+        val.Text = (value % 1 == 0) and tostring(round(value)) or string.format("%.2f", value)
+        local alpha = (value - min) / (max - min)
+        fill.Size = UDim2.new(alpha, 0, 1, 0)
+        if fire then local ok, err = pcall(cb, value); if not ok then notify("Erro", tostring(err), 4) end end
+    end
+    setValue(default, false)
+
+    local dragging = false
+    track.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            local rel = math.clamp((input.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+            setValue(min + (max - min) * rel, true)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+    registerItem(row, cat, name)
+    return row
 end
 
--- 2. Leveling Center
-Pages.Leveling = function()
-    ClearContent()
-    local card = CreateCard("LEVEL PROGRESS & RECOMMENDATIONS", UDim2.new(1, -10, 0, 120))
-    
-    local stats = LocalPlayer:FindFirstChild("leaderstats")
-    local level = stats and stats:FindFirstChild("Level") and stats.Level.Value or 1
-    
-    local recIsland = "Starter Island"
-    for _, island in ipairs(Data.Islands.FirstSea) do
-        if level >= island.Level then recIsland = island.Name end
-    end
-    
-    CreateInfoRow(card, "Recommended Grind Spot:", recIsland)
-    CreateInfoRow(card, "Next Goal:", "Level " .. (level + 10))
-    CreateInfoRow(card, "EXP Multiplier:", "2x (Code Active)")
+local function makeButton(parent, cat, name, cb)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(1, 0, 0, 26); b.BackgroundColor3 = C(T.panel); b.BackgroundTransparency = 0.45
+    b.BorderSizePixel = 0; b.Font = Enum.Font.Gotham; b.TextSize = 12; b.TextColor3 = C(T.text)
+    b.Text = name; b.Parent = parent
+    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 5); c.Parent = b
+    b.MouseButton1Click:Connect(function()
+        local ok, err = pcall(cb)
+        if not ok then notify("Erro", tostring(err), 4) end
+    end)
+    registerItem(b, cat, name)
+    return b
 end
 
--- 3. Fruit Center
-Pages.Fruits = function()
-    ClearContent()
-    local card = CreateCard("FRUIT DATABASE", UDim2.new(1, -10, 0, 30))
-    CreateListRow(card, {"Fruit Name", "Type", "Rarity", "Price"})
-    
-    local listContainer = Create("Frame", {
-        Parent = ContentArea,
-        Size = UDim2.new(1, -10, 0, #Data.Fruits * 32),
-        BackgroundTransparency = 1
-    })
-    
-    for _, fruit in ipairs(Data.Fruits) do
-        CreateListRow(listContainer, {fruit.Name, fruit.Type, fruit.Rarity, fruit.Price})
-    end
-end
-
--- 4. Sword Database
-Pages.Swords = function()
-    ClearContent()
-    local card = CreateCard("SWORD DATABASE", UDim2.new(1, -10, 0, 30))
-    CreateListRow(card, {"Sword Name", "Rarity", "Price", "Requirement"})
-    
-    local listContainer = Create("Frame", {
-        Parent = ContentArea,
-        Size = UDim2.new(1, -10, 0, #Data.Swords * 32),
-        BackgroundTransparency = 1
-    })
-    
-    for _, sword in ipairs(Data.Swords) do
-        CreateListRow(listContainer, {sword.Name, sword.Rarity, sword.Price, sword.Requirement})
-    end
-end
-
--- 5. Sea Explorer
-Pages.SeaExplorer = function()
-    ClearContent()
-    local sea1 = CreateCard("FIRST SEA ISLANDS", UDim2.new(1, -10, 0, 30))
-    CreateListRow(sea1, {"Island", "Level Req.", "Boss"})
-    local list1 = Create("Frame", { Parent = ContentArea, Size = UDim2.new(1, -10, 0, #Data.Islands.FirstSea * 32), BackgroundTransparency = 1 })
-    for _, isl in ipairs(Data.Islands.FirstSea) do
-        CreateListRow(list1, {isl.Name, isl.Level, isl.Boss})
-    end
-    
-    local sea2 = CreateCard("SECOND SEA ISLANDS", UDim2.new(1, -10, 0, 30))
-    CreateListRow(sea2, {"Island", "Level Req.", "Boss"})
-    local list2 = Create("Frame", { Parent = ContentArea, Size = UDim2.new(1, -10, 0, #Data.Islands.SecondSea * 32), BackgroundTransparency = 1 })
-    for _, isl in ipairs(Data.Islands.SecondSea) do
-        CreateListRow(list2, {isl.Name, isl.Level, isl.Boss})
-    end
-    
-    local sea3 = CreateCard("THIRD SEA ISLANDS", UDim2.new(1, -10, 0, 30))
-    CreateListRow(sea3, {"Island", "Level Req.", "Boss"})
-    local list3 = Create("Frame", { Parent = ContentArea, Size = UDim2.new(1, -10, 0, #Data.Islands.ThirdSea * 32), Background
+local function makeDropdown(parent, cat, name, options, default, cb)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 28); row.BackgroundColor3 = C(T.panel); row.BackgroundTransparency = 0.55
+    row.BorderSizePixel = 0; row.Parent = parent
+    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 5); c.Parent = row
+    local l = Instance.new("TextLabel")
+    l.BackgroundTransparency = 1; l.Size = UDim2.new(1, -120, 1, 0); l.Position = UDim2.new(0, 10, 0, 0)
+    l.Font = Enum.Font.Gotham; l.TextSize = 12; l.TextXAlignment = Enum.TextXAlignment.Left
+    l.TextColor3 = C(T.text); l.Text = name; l.Parent = row
+    local pick = Instance.new("TextButton")
+    pick.Size = UDim2.new(0, 100, 0, 20); pick.Position = UDim2.new(1, -110, 0.5, -10)
+    pick.BackgroundColor3 = C(T.bg); pick.BorderSizePixel = 0; pick.Font = Enum.Font.Gotham
+    pick.TextSize = 11; pick.TextColor3 = C(T.accent); pick.Text = default; pick.Parent = row
+    local pc = Instance.new("UICorner"); pc.CornerRadius = UDim.new(0, 4); pc.Parent = pick
+    local idx = 1
+    for i
