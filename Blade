@@ -1,0 +1,393 @@
+--[[
+    BLADE BALL ULTIMATE HUB — DEBUG BUILD
+]]
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local VirtualUser = game:GetService("VirtualUser")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+local Config = {
+    AutoParry = false, PerfectParry = false, SmartParry = true, AutoSpamParry = false,
+    ParryDistance = 12, ReactionTime = 0.12, ParryMethod = "Remote", DangerIndicator = true,
+    BallESP = true, BallHighlight = true, Trajectory = true, ShowSpeed = true, ShowDirection = true, ShowDistance = true, FOVRadius = 120,
+    AutoCombat = false, ActionInterval = 0.1, PriorityMode = "Closest",
+    AbilityNotify = true, AbilityAssist = false, AbilityCooldown = 5,
+    PlayerESP = false, NameESP = true, DistanceESP = true, BoxESP = false, HealthESP = false, TeamCheck = true, PlayerHighlight = true,
+    WalkSpeed = 16, JumpPower = 50, MovementIndicators = true,
+    ThemeColor = Color3.fromRGB(160, 60, 255), Transparency = 0.1, FOVColor = Color3.fromRGB(120, 40, 220),
+    Notifications = true, SaveConfig = false,
+}
+
+local Drawings = {}
+local PlayerHighlights = {}
+local BallHighlight = nil
+local UIRoot = nil
+local MainFrame = nil
+local ContentFrame = nil
+local CurrentTab = "Combat"
+local IsMinimized = false
+local DragStart = nil
+local StartPos = nil
+local IsDragging = false
+local LastParry = 0
+local LastAction = 0
+local NotificationsQueue = {}
+
+local function Notify(text, duration)
+    if not Config.Notifications or not UIRoot then return end
+    duration = duration or 3
+    local notif = Instance.new("Frame")
+    notif.Size = UDim2.new(0, 280, 0, 40)
+    notif.Position = UDim2.new(1, -300, 0, 20 + (#NotificationsQueue * 50))
+    notif.BackgroundColor3 = Color3.fromRGB(20, 10, 30)
+    notif.BorderSizePixel = 0
+    notif.BackgroundTransparency = 0.05
+    notif.Parent = UIRoot
+    local corner = Instance.new("UICorner", notif); corner.CornerRadius = UDim.new(0, 8)
+    local stroke = Instance.new("UIStroke", notif); stroke.Color = Config.ThemeColor; stroke.Thickness = 1
+    local label = Instance.new("TextLabel", notif)
+    label.Size = UDim2.new(1, -20, 1, 0); label.Position = UDim2.new(0, 10, 0, 0)
+    label.BackgroundTransparency = 1; label.Text = text
+    label.TextColor3 = Color3.fromRGB(220, 180, 255); label.TextSize = 14
+    label.Font = Enum.Font.GothamMedium; label.TextXAlignment = Enum.TextXAlignment.Left
+    table.insert(NotificationsQueue, notif)
+    TweenService:Create(notif, TweenInfo.new(0.3), {BackgroundTransparency = 0.3}):Play()
+    task.delay(duration, function()
+        if notif and notif.Parent then
+            TweenService:Create(notif, TweenInfo.new(0.3), {BackgroundTransparency = 1}):Play()
+            for _, v in ipairs(notif:GetDescendants()) do
+                if v:IsA("TextLabel") then TweenService:Create(v, TweenInfo.new(0.3), {TextTransparency = 1}):Play() end
+            end
+            task.wait(0.3); notif:Destroy()
+            for i, n in ipairs(NotificationsQueue) do if n == notif then table.remove(NotificationsQueue, i); break end end
+        end
+    end)
+end
+
+local function GetCharacter() return LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait() end
+local function GetRoot() local char = GetCharacter(); return char:FindFirstChild("HumanoidRootPart") end
+local function GetHumanoid() local char = GetCharacter(); return char:FindFirstChildOfClass("Humanoid") end
+
+local BallsFolder = nil
+local ParryRemote = nil
+
+local function DiscoverBallsFolder()
+    local folder = Workspace:FindFirstChild("Balls")
+    if folder and folder:IsA("Folder") then BallsFolder = folder; return true end
+    return false
+end
+
+local function DiscoverParryRemote()
+    local remotes = ReplicatedStorage:FindFirstChild("Remotes") or ReplicatedStorage:FindFirstChild("RemoteEvents")
+    if not remotes then return false end
+    local candidates = {"ParryButtonPress","ParryAttempt","Parry","AttemptParry","Block"}
+    for _, name in ipairs(candidates) do
+        local r = remotes:FindFirstChild(name)
+        if r and (r:IsA("RemoteEvent") or r:IsA("RemoteFunction")) then ParryRemote = r; return true end
+    end
+    for _, obj in ipairs(remotes:GetChildren()) do
+        if (obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction")) and obj.Name:lower():find("parry") then ParryRemote = obj; return true end
+    end
+    return false
+end
+
+local function IsRealBall(ball)
+    if typeof(ball) ~= "Instance" or not ball:IsA("BasePart") then return false end
+    if not BallsFolder or not ball:IsDescendantOf(BallsFolder) then return false end
+    local real = ball:GetAttribute("realBall")
+    if real ~= nil then return real == true end
+    return ball.AssemblyLinearVelocity.Magnitude > 0
+end
+
+local function GetTargetBall()
+    if not BallsFolder then return nil end
+    for _, ball in ipairs(BallsFolder:GetChildren()) do
+        if IsRealBall(ball) then
+            local target = ball:GetAttribute("target")
+            local targeting = ball:GetAttribute("IsTargeting")
+            if target == LocalPlayer.Name or targeting == LocalPlayer.Name or targeting == true then return ball end
+        end
+    end
+    local closest, minDist = nil, math.huge
+    local root = GetRoot(); if not root then return nil end
+    for _, ball in ipairs(BallsFolder:GetChildren()) do
+        if IsRealBall(ball) then
+            local d = (ball.Position - root.Position).Magnitude
+            if d < minDist then minDist = d; closest = ball end
+        end
+    end
+    return closest
+end
+
+local function FireParry()
+    local now = tick()
+    if now - LastParry < Config.ReactionTime then return end
+    if Config.ParryMethod == "Remote" and ParryRemote then
+        pcall(function()
+            if ParryRemote:IsA("RemoteEvent") then ParryRemote:FireServer() else ParryRemote:InvokeServer() end
+        end)
+        LastParry = now; return
+    end
+    pcall(function()
+        VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+        VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+    end)
+    LastParry = now
+end
+
+local function SmartParryTick()
+    if not (Config.AutoParry or Config.PerfectParry or Config.SmartParry) then return end
+    if not BallsFolder then return end
+    local ball = GetTargetBall(); if not ball then return end
+    local root = GetRoot(); if not root then return end
+    local ballPos = ball.Position; local ballVel = ball.AssemblyLinearVelocity
+    local charPos = root.Position; local charVel = root.AssemblyLinearVelocity
+    local distance = (ballPos - charPos).Magnitude
+    if distance > Config.ParryDistance * 2 then return end
+    local dirToPlayer = (charPos - ballPos).Unit
+    local approachSpeed = ballVel:Dot(dirToPlayer) - charVel:Dot(dirToPlayer)
+    if approachSpeed <= 0 then return end
+    local timeToImpact = distance / approachSpeed
+    local threshold = Config.ReactionTime
+    if Config.SmartParry then threshold = math.max(0.08, Config.ReactionTime - (ballVel.Magnitude * 0.0005)) end
+    if Config.PerfectParry then threshold = threshold * 0.6 end
+    if timeToImpact <= threshold and distance <= Config.ParryDistance then FireParry() end
+    if Config.AutoSpamParry and timeToImpact <= Config.ReactionTime * 2 and distance <= Config.ParryDistance * 1.5 then FireParry() end
+end
+
+local function ClearBallHighlight()
+    if BallHighlight and BallHighlight.Parent then BallHighlight:Destroy() end
+    BallHighlight = nil
+end
+
+local function UpdateBallHighlight()
+    if not Config.BallHighlight then ClearBallHighlight(); return end
+    local ball = GetTargetBall(); if not ball then ClearBallHighlight(); return end
+    if not BallHighlight or BallHighlight.Parent ~= ball then
+        ClearBallHighlight()
+        BallHighlight = Instance.new("Highlight")
+        BallHighlight.Name = "BBH_BallHighlight"
+        BallHighlight.FillColor = Config.ThemeColor; BallHighlight.FillTransparency = 0.5
+        BallHighlight.OutlineColor = Color3.fromRGB(255, 100, 255); BallHighlight.OutlineTransparency = 0
+        BallHighlight.Parent = ball
+    end
+end
+
+local function DrawTrajectory()
+    for i = #Drawings, 1, -1 do
+        local d = Drawings[i]
+        if typeof(d) ~= "Instance" then pcall(function() d:Remove() end); table.remove(Drawings, i) end
+    end
+    if not Config.Trajectory or not Drawing then return end
+    local ball = GetTargetBall(); if not ball then return end
+    local pos = ball.Position; local vel = ball.AssemblyLinearVelocity
+    local points = {}
+    for t = 0, 1.5, 0.05 do table.insert(points, pos + vel * t) end
+    for i = 1, #points - 1 do
+        local a = Camera:WorldToViewportPoint(points[i]); local b = Camera:WorldToViewportPoint(points[i + 1])
+        if a.Z > 0 and b.Z > 0 then
+            local line = Drawing.new("Line")
+            line.Visible = true; line.Color = Config.ThemeColor; line.Thickness = 2; line.Transparency = 0.8
+            line.From = Vector2.new(a.X, a.Y); line.To = Vector2.new(b.X, b.Y)
+            table.insert(Drawings, line)
+        end
+    end
+end
+
+local function ApplyPlayerESP()
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer then
+            local char = plr.Character
+            if char then
+                if Config.PlayerESP and Config.PlayerHighlight then
+                    if not PlayerHighlights[plr] or not PlayerHighlights[plr].Parent then
+                        local hl = Instance.new("Highlight")
+                        hl.Name = "BBH_PlayerHighlight"; hl.FillColor = Config.ThemeColor; hl.FillTransparency = 0.6
+                        hl.OutlineColor = Color3.fromRGB(200, 120, 255); hl.OutlineTransparency = 0.2
+                        hl.Parent = char; PlayerHighlights[plr] = hl
+                    end
+                else
+                    if PlayerHighlights[plr] then PlayerHighlights[plr]:Destroy(); PlayerHighlights[plr] = nil end
+                end
+            end
+        end
+    end
+end
+
+local function AbilityTick() end
+
+local BuildTab
+
+local function CreateUI()
+    print("[BBH-DEBUG] CreateUI: inicio")
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "BBH_Ultimate"; gui.ResetOnSpawn = false; gui.IgnoreGuiInset = true
+    gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+    UIRoot = gui
+    print("[BBH-DEBUG] CreateUI: ScreenGui parented")
+
+    local main = Instance.new("Frame")
+    main.Name = "Main"; main.Size = UDim2.new(0, 440, 0, 340); main.Position = UDim2.new(0.5, -220, 0.5, -170)
+    main.BackgroundColor3 = Color3.fromRGB(10, 5, 15); main.BorderSizePixel = 0; main.Parent = gui
+    MainFrame = main
+    local corner = Instance.new("UICorner", main); corner.CornerRadius = UDim.new(0, 10)
+    local stroke = Instance.new("UIStroke", main); stroke.Color = Config.ThemeColor; stroke.Thickness = 1; stroke.Transparency = 0.3
+
+    local header = Instance.new("Frame", main)
+    header.Name = "Header"; header.Size = UDim2.new(1, 0, 0, 38); header.BackgroundColor3 = Color3.fromRGB(20, 10, 30); header.BorderSizePixel = 0
+    local hCorner = Instance.new("UICorner", header); hCorner.CornerRadius = UDim.new(0, 10)
+
+    local title = Instance.new("TextLabel", header)
+    title.Size = UDim2.new(1, -100, 1, 0); title.Position = UDim2.new(0, 12, 0, 0)
+    title.BackgroundTransparency = 1; title.Text = "BLADE BALL ULTIMATE HUB"; title.TextColor3 = Config.ThemeColor
+    title.TextSize = 15; title.Font = Enum.Font.GothamBold; title.TextXAlignment = Enum.TextXAlignment.Left
+    print("[BBH-DEBUG] CreateUI: header ok")
+
+    local minimizeBtn = Instance.new("TextButton", header)
+    minimizeBtn.Size = UDim2.new(0, 28, 0, 28); minimizeBtn.Position = UDim2.new(1, -68, 0, 5)
+    minimizeBtn.BackgroundColor3 = Color3.fromRGB(40, 20, 60); minimizeBtn.Text = "—"
+    minimizeBtn.TextColor3 = Color3.fromRGB(200, 150, 255); minimizeBtn.TextSize = 14
+    minimizeBtn.Font = Enum.Font.GothamBold; minimizeBtn.BorderSizePixel = 0
+    local minCorner = Instance.new("UICorner", minimizeBtn); minCorner.CornerRadius = UDim.new(0, 6)
+
+    local closeBtn = Instance.new("TextButton", header)
+    closeBtn.Size = UDim2.new(0, 28, 0, 28); closeBtn.Position = UDim2.new(1, -34, 0, 5)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(70, 20, 30); closeBtn.Text = "X"
+    closeBtn.TextColor3 = Color3.fromRGB(255, 150, 150); closeBtn.TextSize = 14
+    closeBtn.Font = Enum.Font.GothamBold; closeBtn.BorderSizePixel = 0
+    local closeCorner = Instance.new("UICorner", closeBtn); closeCorner.CornerRadius = UDim.new(0, 6)
+
+    local sidebar = Instance.new("Frame", main)
+    sidebar.Name = "Sidebar"; sidebar.Size = UDim2.new(0, 100, 1, -48); sidebar.Position = UDim2.new(0, 8, 0, 42)
+    sidebar.BackgroundTransparency = 1
+
+    local tabs = {"Combat", "Ball", "Auto", "Abilities", "Players", "Movement", "Settings"}
+    local tabButtons = {}
+    for i, tabName in ipairs(tabs) do
+        local btn = Instance.new("TextButton", sidebar)
+        btn.Size = UDim2.new(1, 0, 0, 30); btn.Position = UDim2.new(0, 0, 0, (i - 1) * 34)
+        btn.BackgroundColor3 = i == 1 and Color3.fromRGB(60, 25, 90) or Color3.fromRGB(25, 12, 40)
+        btn.Text = tabName
+        btn.TextColor3 = i == 1 and Color3.fromRGB(220, 180, 255) or Color3.fromRGB(140, 100, 180)
+        btn.TextSize = 12; btn.Font = Enum.Font.GothamMedium; btn.BorderSizePixel = 0
+        local c = Instance.new("UICorner", btn); c.CornerRadius = UDim.new(0, 6)
+        tabButtons[tabName] = btn
+        btn.MouseButton1Click:Connect(function()
+            CurrentTab = tabName
+            for n, b in pairs(tabButtons) do
+                b.BackgroundColor3 = n == tabName and Color3.fromRGB(60, 25, 90) or Color3.fromRGB(25, 12, 40)
+                b.TextColor3 = n == tabName and Color3.fromRGB(220, 180, 255) or Color3.fromRGB(140, 100, 180)
+            end
+            BuildTab(tabName)
+        end)
+    end
+    print("[BBH-DEBUG] CreateUI: sidebar ok")
+
+    local content = Instance.new("Frame", main)
+    content.Name = "Content"; content.Size = UDim2.new(1, -120, 1, -52); content.Position = UDim2.new(0, 112, 0, 44)
+    content.BackgroundTransparency = 1
+    ContentFrame = content
+
+    print("[BBH-DEBUG] CreateUI: chamando BuildTab")
+    BuildTab("Combat")
+    print("[BBH-DEBUG] CreateUI: BuildTab retornou")
+
+    header.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            IsDragging = true; DragStart = input.Position; StartPos = main.Position
+            input.Changed:Connect(function() if input.UserInputState == Enum.UserInputState.End then IsDragging = false end end)
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if IsDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - DragStart
+            main.Position = UDim2.new(StartPos.X.Scale, StartPos.X.Offset + delta.X, StartPos.Y.Scale, StartPos.Y.Offset + delta.Y)
+        end
+    end)
+
+    minimizeBtn.MouseButton1Click:Connect(function()
+        IsMinimized = not IsMinimized
+        ContentFrame.Visible = not IsMinimized; sidebar.Visible = not IsMinimized
+        main.Size = IsMinimized and UDim2.new(0, 440, 0, 38) or UDim2.new(0, 440, 0, 340)
+    end)
+
+    closeBtn.MouseButton1Click:Connect(function()
+        gui:Destroy()
+        for _, d in pairs(Drawings) do if typeof(d) ~= "Instance" then pcall(function() d:Remove() end) end end
+        Drawings = {}
+    end)
+    print("[BBH-DEBUG] CreateUI: fim")
+end
+
+BuildTab = function(tabName)
+    print("[BBH-DEBUG] BuildTab: inicio", tabName)
+    if not ContentFrame then print("[BBH-DEBUG] BuildTab: ContentFrame nil!"); return end
+    for _, child in ipairs(ContentFrame:GetChildren()) do child:Destroy() end
+    local y = 0
+
+    local function AddToggle(labelText, key, callback)
+        local frame = Instance.new("Frame", ContentFrame)
+        frame.Size = UDim2.new(1, 0, 0, 30); frame.Position = UDim2.new(0, 0, 0, y); frame.BackgroundTransparency = 1
+        y = y + 34
+        local label = Instance.new("TextLabel", frame)
+        label.Size = UDim2.new(1, -60, 1, 0); label.BackgroundTransparency = 1; label.Text = labelText
+        label.TextColor3 = Color3.fromRGB(200, 200, 220); label.TextSize = 13; label.Font = Enum.Font.Gotham
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        local toggle = Instance.new("TextButton", frame)
+        toggle.Size = UDim2.new(0, 44, 0, 22); toggle.Position = UDim2.new(1, -44, 0.5, -11)
+        toggle.BackgroundColor3 = Config[key] and Config.ThemeColor or Color3.fromRGB(40, 40, 40)
+        toggle.Text = Config[key] and "ON" or "OFF"
+        toggle.TextColor3 = Config[key] and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 150)
+        toggle.TextSize = 11; toggle.Font = Enum.Font.GothamBold; toggle.BorderSizePixel = 0
+        local c = Instance.new("UICorner", toggle); c.CornerRadius = UDim.new(0, 4)
+        toggle.MouseButton1Click:Connect(function()
+            Config[key] = not Config[key]
+            toggle.BackgroundColor3 = Config[key] and Config.ThemeColor or Color3.fromRGB(40, 40, 40)
+            toggle.Text = Config[key] and "ON" or "OFF"
+            toggle.TextColor3 = Config[key] and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 150)
+            if callback then callback(Config[key]) end
+            Notify(key .. " = " .. tostring(Config[key]))
+        end)
+    end
+
+    local function AddSlider(labelText, key, min, max, step)
+        local frame = Instance.new("Frame", ContentFrame)
+        frame.Size = UDim2.new(1, 0, 0, 42); frame.Position = UDim2.new(0, 0, 0, y); frame.BackgroundTransparency = 1
+        y = y + 46
+        local label = Instance.new("TextLabel", frame)
+        label.Size = UDim2.new(1, 0, 0, 16); label.BackgroundTransparency = 1
+        label.Text = labelText .. ": " .. tostring(Config[key])
+        label.TextColor3 = Color3.fromRGB(200, 200, 220); label.TextSize = 12; label.Font = Enum.Font.Gotham
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        local bar = Instance.new("Frame", frame)
+        bar.Size = UDim2.new(1, 0, 0, 6); bar.Position = UDim2.new(0, 0, 0, 22)
+        bar.BackgroundColor3 = Color3.fromRGB(30, 20, 40); bar.BorderSizePixel = 0
+        local bc = Instance.new("UICorner", bar); bc.CornerRadius = UDim.new(1, 0)
+        local fill = Instance.new("Frame", bar)
+        fill.Size = UDim2.new((Config[key] - min) / (max - min), 0, 1, 0)
+        fill.BackgroundColor3 = Config.ThemeColor; fill.BorderSizePixel = 0
+        local fc = Instance.new("UICorner", fill); fc.CornerRadius = UDim.new(1, 0)
+        local function updateFromX(x)
+            local rel = math.clamp((x - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
+            local val = min + (max - min) * rel
+            if step then val = math.round(val / step) * step end
+            Config[key] = val; fill.Size = UDim2.new(rel, 0, 1, 0)
+            label.Text = labelText .. ": " .. string.format("%.2f", val)
+        end
+        bar.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                updateFromX(input.Position.X)
+                local moveConn = UserInputService.InputChanged:Connect(function(inp)
+                    if inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch then updateFromX(inp.Position.X) end
+                end)
+                local endConn = UserInputService.InputEnded:Connect(function(inp)
+                    if inp.UserInputType == Enu
